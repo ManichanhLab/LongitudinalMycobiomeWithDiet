@@ -1,0 +1,379 @@
+---
+title: "CNV Mapping"
+author: "Aleix Canalda"
+date: "12/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(readxl)
+library(stringr)
+#library(ggiraph)
+library(RColorBrewer)
+library(ggtext)
+library(car)
+```
+## 
+FUNCTIONS
+```{r}
+get_cnv <- function(afla){  
+  df <- as.data.frame(afla)
+  df$CNV <- NA
+  for (i in 1:nrow(afla) ) {
+    gen <- df[i,1]
+    print(gen)
+    its_depth <- read.table(paste("/mnt/synology/ALEIX/busco_mapping/Mapping/",gen,"/",gen,"_ITS.depth.30.txt.gz",sep=""),header = FALSE, sep = "\t")
+    trimmed_its_depth <- subset(its_depth, V2 > 50  & V2 < max(V2)-50)
+    mg_depth <- read.table(paste("/mnt/synology/ALEIX/busco_mapping/Mapping/",gen,"/",gen,"_MG.depth.30.txt.gz",sep=""), header = FALSE, sep = "\t")
+    genes <-unique(mg_depth[,1])
+    trimmed_mg_depth <- mg_depth %>%
+      group_by(V1) %>%
+      filter(., V2 > 50  & V2 < max(V2)-50)
+    trimmed_mg_mean <- trimmed_mg_depth %>%
+      group_by(V1) %>%
+      summarise(Mean = mean(V3, na.rm = TRUE))
+    print(mean(trimmed_its_depth$V3))
+    print(median(trimmed_mg_mean$Mean))
+    df[i,2] <- round(mean(trimmed_its_depth$V3)/median(trimmed_mg_mean$Mean))
+  }
+  return(df)
+}
+```
+
+```{r}
+its_depth <- read.table("/mnt/synology/ALEIX/mock_genome/GCA_000976365.2_Sc_YJM693_v1_genomic.fna_ITS.depth.30.txt.gz",header = FALSE, sep = "\t")
+#its_depth <- read.table("/mnt/synology/ALEIX/c_albicans_inst_pasteur/Mapping/SRR6669970/SRR6669970_ITS.depth.30.txt.gz",header = FALSE, sep = "\t")
+trimmed_its_depth <- subset(its_depth, V2 > 50 & V2 < max(V2)- 50)
+
+ggplot(data = its_depth, aes(x=V2, y=V3)) +
+  geom_point() +
+  ylim(0, max(its_depth[,3]))
+
+ggplot(data = trimmed_its_depth, aes(x=V2, y=V3)) +
+  geom_point() +
+  ylim(0, max(trimmed_its_depth[,3]))
+```
+
+```{r}
+mg_depth <- read.table("/mnt/synology/ALEIX/mock_genome/GCA_000976365.2_Sc_YJM693_v1_genomic.fna_MG.depth.30.txt.gz", header = FALSE, sep = "\t")
+#mg_depth <- read.table("/mnt/synology/ALEIX/c_albicans_inst_pasteur/Mapping/SRR6669970/SRR6669970_MG.depth.30.txt.gz", header = FALSE, sep = "\t")
+
+genes <-unique(mg_depth[,1])
+
+trimmed_mg_depth <- mg_depth %>%
+  group_by(V1) %>%
+  filter(., V2 > 50 & V2 < max(V2) - 50)# %>%
+  #filter(., V3 > 20)
+
+ggplot(data = mg_depth[mg_depth$V1==genes[0:5],], aes(x = V2, y=V3, color = V1)) +
+  geom_point() +
+  ylim(0, max(mg_depth[mg_depth$V1==genes[0:5],3])) +
+  theme(legend.position = "none")
+ggplot(data = trimmed_mg_depth[trimmed_mg_depth$V1==genes,], aes(x = V2, y=V3, color = V1)) +
+  geom_point() +
+  ylim(0, max(trimmed_mg_depth[trimmed_mg_depth$V1==genes,3])) +
+  theme(legend.position = "none")
+```
+
+```{r}
+#find average depth of each gene, look for outliers
+trimmed_mg_mean <- trimmed_mg_depth %>%
+  group_by(V1) %>%
+  summarise(Mean = mean(V3, na.rm = TRUE),Length = max(V2))
+#trimmed_mg_mean$Final_depth <- trimmed_mg_mean$Mean/trimmed_mg_mean$Length
+# Average read depth over length of gene
+
+
+#The number of ITS copies inside this genome according to the read depth would be:
+round((mean(trimmed_its_depth$V3))/(median(trimmed_mg_mean$Mean)))
+```
+
+AUTOMATION:
+```{r}
+glab <- read.table("/mnt/synology/ALEIX/busco_mapping/c_glabrata.txt", header = FALSE)
+glab_df <- get_cnv(glab)
+```
+
+C glab its cnv plot:
+```{r}
+ggplot(glab_df, aes(x=reorder(V1,CNV), y=CNV)) +
+  geom_segment( aes(x=reorder(V1,CNV), xend=V1, y=0, yend=CNV), color="skyblue") +
+  geom_point( color="blue", size=3, alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(size = 10)
+  )
+```
+
+AUTOMATION:
+```{r, echo=FALSE}
+srr_list <- read.table("/mnt/synology/ALEIX/c_albicans_inst_pasteur/SRR_Acc_List_Pasteur182.txt", header = FALSE)
+#strain <- read.table("/mnt/synology/ALEIX/c_albicans_inst_pasteur/sra_taxa.txt", header = FALSE)
+#srr_df$strain <- unlist(strain)
+srr_df <- as.data.frame(srr_list)
+srr_df$CNV <- NA
+for (i in 1:nrow(srr_list) ) {
+  gen <- srr_df[i,1]
+  print(gen)
+  its_depth <- read.table(paste("/mnt/synology/ALEIX/c_albicans_inst_pasteur/Mapping/",gen,"/",gen,"_ITS.depth.30.txt.gz",sep=""),header = FALSE, sep = "\t")
+  trimmed_its_depth <- subset(its_depth, V2 > 25  & V2 < max(V2)-25)
+  mg_depth <- read.table(paste("/mnt/synology/ALEIX/c_albicans_inst_pasteur/Mapping/",gen,"/",gen,"_MG.depth.30.txt.gz",sep=""), header = FALSE, sep = "\t")
+  genes <-unique(mg_depth[,1])
+  trimmed_mg_depth <- mg_depth %>%
+  group_by(V1) %>%
+    filter(., V2 > 25  & V2 < max(V2)-25)
+  trimmed_mg_mean <- trimmed_mg_depth %>%
+      group_by(V1) %>%
+      summarise(Mean = mean(V3, na.rm = TRUE))
+  srr_df[i,2] <- round(mean(trimmed_its_depth$V3)/median(trimmed_mg_mean$Mean))
+  }
+```
+
+C alb its cnv plot:
+```{r}
+calb_plot <- ggplot(srr_df, aes(x=reorder(V1,CNV), y=CNV)) +
+  geom_segment( aes(x=reorder(V1,CNV), xend=V1, y=0, yend=CNV), color="skyblue") +
+  geom_point( color="blue", size=3, alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(size = 10)
+  )
+#png(file="calb_plot.png")
+calb_plot
+#dev.off()
+```
+
+AUTOMATION:
+```{r, echo=FALSE}
+afla <- read.table("/mnt/synology/ALEIX/busco_mapping/aspergillus_flavus.txt", header = FALSE)
+afla_df <- get_cnv(afla)
+```
+
+A fla its cnv plot:
+
+```{r}
+ggplot(afla_df, aes(x=reorder(V1,CNV), y=CNV)) +
+  geom_segment( aes(x=reorder(V1,CNV), xend=V1, y=0, yend=CNV), color="skyblue") +
+  geom_point( color="blue", size=3, alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(size = 10)
+  )
+```
+
+
+AUTOMATION:
+```{r, echo=FALSE}
+cryp <- read.table("/mnt/synology/ALEIX/busco_mapping/cryptonefro_basidio.txt", header = FALSE)
+crypnefro_df <- get_cnv(cryp)
+```
+
+C nefro its cnv plot:
+
+```{r}
+ggplot(crypnefro_df, aes(x=reorder(V1,CNV), y=CNV)) +
+  geom_segment( aes(x=reorder(V1,CNV), xend=V1, y=0, yend=CNV), color="skyblue") +
+  geom_point( color="blue", size=3, alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(size = 10)
+  )
+```
+
+
+AUTOMATION:
+```{r, echo=FALSE}
+scere <- read.table("/mnt/synology/ALEIX/busco_mapping/scere.txt", header = FALSE)
+scere_df <- get_cnv(scere)
+```
+
+S cere its cnv plot:
+
+```{r}
+scere_strain <- read.table("/mnt/synology/ALEIX/taxa_strain.txt",header = FALSE)
+scere_df$Strain <- unlist(scere_strain)
+scere_cnv <- ggplot(scere_df, aes(x=reorder(Strain,CNV), y=CNV)) +
+  geom_segment(size=1.5, aes(x=reorder(Strain,CNV), xend=Strain, y=0, yend=CNV), color="#CE9C9D") +
+  geom_point( color="#CE9C9D", size=5, alpha=1) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(size = 10)
+  ) + xlab("S. cerevisiae strain")+ theme_prism(base_size = 16) + ylab("ITS copy numbers")+
+ scale_y_continuous(
+  limits = c(0, 170), 
+  breaks = seq(0, 170, 50),
+  guide = "prism_offset"
+)
+  
+```
+
+AUTOMATION:
+```{r, echo=FALSE}
+rhodo <- read.table("/mnt/synology/ALEIX/busco_mapping/rhodomucil_basidio.txt", header = FALSE)
+rhodo_df <- get_cnv(rhodo)
+```
+
+R mucil its cnv plot:
+
+```{r}
+ggplot(rhodo_df, aes(x=reorder(V1,CNV), y=CNV)) +
+  geom_segment( aes(x=reorder(V1,CNV), xend=V1, y=0, yend=CNV), color="skyblue") +
+  geom_point( color="blue", size=3, alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(size = 10)
+  )
+```
+
+AUTOMATION:
+```{r, echo=FALSE}
+rhizo <- read.table("/mnt/synology/ALEIX/busco_mapping/rhizooryz_mucoro.txt", header = FALSE)
+rhi_df <- get_cnv(rhizo)
+```
+
+R oryz its cnv plot:
+
+```{r}
+ggplot(rhi_df, aes(x=reorder(V1,CNV), y=CNV)) +
+  geom_segment( aes(x=reorder(V1,CNV), xend=V1, y=0, yend=CNV), color="skyblue") +
+  geom_point( color="blue", size=3, alpha=0.6) +
+  theme_light() +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    text = element_text(size = 10)
+  )
+```
+
+
+VARIANCE
+
+```{r}
+glab_df$Phylum <- "Ascomycota"
+glab_df$Class <- "Saccharomycetes"
+glab_df$Order <- "Saccharomycetales"
+glab_df$Family <- "Debaryomycetaceae"
+glab_df$Genus <- "Candida"
+glab_df$Species <- "C. glabrata"
+
+afla_df$Phylum <- "Ascomycota"
+afla_df$Class <- "Eurotiomycetes"
+afla_df$Order <- "Eurotiales"
+afla_df$Family <- "Aspergillaceae"
+afla_df$Genus <- "Aspergillus"
+afla_df$Species <- "A. flavus"
+
+crypnefro_df$Phylum <- "Basidiomycota"
+crypnefro_df$Class <- "Tremellomycetes"
+crypnefro_df$Order <- "Tremellales"
+crypnefro_df$Family <- "Cryptococcaceae"
+crypnefro_df$Genus <- "Cryptococcus"
+crypnefro_df$Species <- "C. neoformans"
+
+rhi_df$Phylum <- "Mucoromycota"
+rhi_df$Class <- "Mucoromycetes"
+rhi_df$Order <- "Mucorales"
+rhi_df$Family <- "Rhizopodaceae"
+rhi_df$Genus <- "Rhizopus"
+rhi_df$Species <- "R. oryzae"
+
+rhodo_df$Phylum <- "Basidiomycota"
+rhodo_df$Class <- "Microbotryomycetes"
+rhodo_df$Order <- "Sporidiobolales"
+rhodo_df$Family <- "Sporidiobolaceae"
+rhodo_df$Genus <- "Rhodotorula"
+rhodo_df$Species <- "R. mucilaginosa"
+
+scere_df$Phylum <- "Ascomycota"
+scere_df$Class <- "Saccharomycetes"
+scere_df$Order <- "Saccharomycetales"
+scere_df$Family <- "Saccharomycetaceae"
+scere_df$Genus <- "Saccharomyces"
+scere_df$Species <- "S. cerevisiae"
+
+srr_df$Phylum <- "Ascomycota"
+srr_df$Class <- "Saccharomycetes"
+srr_df$Order <- "Saccharomycetales"
+srr_df$Family <- "Debaryomycetaceae"
+srr_df$Genus <- "Candida"
+srr_df$Species <- "C. albicans"
+
+all_df <- rbind(srr_df,afla_df)
+all_df <- rbind(all_df,crypnefro_df)
+all_df <- rbind(all_df,glab_df)
+all_df <- rbind(all_df,scere_df[,-3])
+all_df <- rbind(all_df,rhi_df)
+all_df <- rbind(all_df,rhodo_df)
+
+
+#To do ANOVA we have to check whether the CNV follow a normal distribution with the Kolmogorov-Smirnov test
+ks.test(rhodo_df$CNV,pnorm,mean(rhodo_df$CNV),sd(rhodo_df$CNV))
+ks.test(rhi_df$CNV,pnorm,mean(rhi_df$CNV),sd(rhi_df$CNV))
+ks.test(crypnefro_df$CNV,pnorm,mean(crypnefro_df$CNV),sd(crypnefro_df$CNV))
+ks.test(crypnefro_df$CNV,pnorm,mean(crypnefro_df$CNV),sd(crypnefro_df$CNV))
+ks.test(scere_df$CNV,pnorm,mean(scere_df$CNV),sd(scere_df$CNV))
+ks.test(srr_df$CNV,pnorm,mean(srr_df$CNV),sd(srr_df$CNV))
+ks.test(glab_df$CNV,pnorm,mean(glab_df$CNV),sd(glab_df$CNV))
+#All the data follow a normal distribution, therefore we can carry on with the ANOVA
+anova <- aov(CNV ~ Species, data = all_df)
+summary(anova)
+all_df_order <- all_df %>% arrange(Phylum) %>% mutate(Species=factor(Species,levels = c("A. flavus","C. albicans","C. glabrata","S. cerevisiae","C. neoformans","R. mucilaginosa","R. oryzae")))
+all_df %>% group_by(Species) %>%
+  summarise(Mean = mean(CNV, na.rm = TRUE),
+            Sd = sd(CNV, na.rm = TRUE),
+            IC95 = mean(CNV, na.rm = TRUE)+qt(0.975,df=length(Species)-1)*sd(CNV, na.rm = TRUE)/sqrt(length(Species)))
+p <-ggplot(all_df_order, aes(Species,CNV,color=Phylum)) +
+  geom_violin(lwd=2) +
+  geom_jitter() +
+  theme_pubr()+
+ stat_compare_means(bracket.size=1, size=5) +
+  # stat_compare_means(comparisons=list(combn(unique(all_df$Species),2)),data=all_df,method = "wilcox.test", label = "..p.signif..",
+  # symnum.args = list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 0.1, 1),symbols = c("*****","****", "***", "**", "*","n.s")))+
+  scale_x_discrete(guide = guide_axis(n.dodge = 1))+ theme_prism(base_size = 16)+
+  theme(axis.text.x = element_text(face="italic", size=16),legend.position = "right",axis.title = element_text(face = "bold"))+
+  scale_color_manual(values = c("#CE9C9D", "#80ADBC", "#CAB08B"))+ 
+ scale_y_continuous(
+  limits = c(0, 170), 
+  breaks = seq(0, 170, 50),
+  guide = "prism_offset"
+) + ylab("ITS copy numbers") 
+
+ p_sd <- add_summary(p,fun = "mean_sd",color="black",size = 0.5)
+
+```
+
+
+

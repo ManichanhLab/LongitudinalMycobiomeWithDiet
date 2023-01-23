@@ -1,0 +1,309 @@
+---
+title: "Gut_mock"
+author: "Aleix Canalda"
+date: "3/23/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(readxl)
+library(stringr)
+#library(ggiraph)
+library(RColorBrewer)
+library(phyloseq)
+library(vegan)
+library(PairedData)
+library(ape)
+library(grid)
+library(gtable)
+```
+
+MOCK POPULATION FUNCTIONS
+```{r}
+create_taxa_table <- function(taxonomy_df,n_col){
+  for (i in 1:nrow(taxonomy_df)) {
+    taxa=taxonomy_df[i,n_col]
+    tax_list=strsplit(taxa,";")
+    kingdom=tax_list[[1]][1]
+    phylum=tax_list[[1]][2]
+    class=tax_list[[1]][3]
+    order=tax_list[[1]][4]
+    family=tax_list[[1]][5]
+    genus=tax_list[[1]][6]
+    specie=tax_list[[1]][7]
+    strain=tax_list[[1]][8]
+
+    if (!exists("taxa_table")){
+      taxa_table<- data.frame(kingdom, phylum, class, order, family, genus, specie,strain)
+      } 
+    else if (exists("taxa_table")){
+      taxa_table <- rbind(taxa_table, c(kingdom, phylum, class, order, family, genus, specie,strain))
+    }
+  }
+  taxa_table[is.na(taxa_table)] <- "No"
+  colnames(taxa_table) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species","Strain")
+  return(taxa_table)
+}
+gutfungiits <- function(){
+  mg_depth <- read.table(paste("/mnt/synology/ALEIX/gut_mock/gutfungiits_ITS.depth.30.txt.gz",sep=""), header = FALSE, sep = "\t")
+  genes <-unique(mg_depth[,1])
+
+  trimmed_mg_depth <- mg_depth %>%
+    group_by(V1) %>%
+    filter(.,  V2 > 50  & V2 < max(V2)-50) %>%
+    filter(., V3 > 15)
+  trimmed_mg_mean <- trimmed_mg_depth %>%
+    group_by(V1) %>%
+    summarise(Mean = mean(V3, na.rm = TRUE),Length = max(V2))
+  print(trimmed_mg_mean)
+  # write.table(trimmed_mg_mean[,1],paste("/mnt/synology/ALEIX/gut_mock/transition/gutfungiits_ITS.txt",sep=""),row.names = FALSE)
+  return(trimmed_mg_mean)
+}
+gutfungiits2 <- function(trimmed_mg_mean){
+  tax <- read.table(paste("/mnt/synology/ALEIX/gut_mock/transition/mockits_tax2.txt",sep=""))
+  trimmed_mg_mean <- merge(trimmed_mg_mean,tax)
+  taxa2_table <- create_taxa_table(taxonomy_df = trimmed_mg_mean,n_col = 4)
+  trimmed_mg_mean <- cbind(trimmed_mg_mean,taxa2_table)
+#get rel ab of each taxa
+#trimmed_mg_mean[trimmed_mg_mean$Species=="s__unidentified" & trimmed_mg_mean$Genus=="g__Aspergillus",]$Species <- "s__Aspergillus_flavus"
+#trimmed_mg_mean[trimmed_mg_mean$Species=="s__unidentified" & trimmed_mg_mean$Genus=="g__Saccharomyces",]$Species <- "s__Saccharomyces_cerevisiae"
+#trimmed_mg_mean[trimmed_mg_mean$Species=="s__unidentified" & trimmed_mg_mean$Genus=="g__Candida",]$Species <- "s__Candida_albicans"
+  mock_relab <- trimmed_mg_mean %>%
+  #filter(.,Mean > 4) %>%
+    mutate(.,rel_ab = Mean/sum(Mean)) %>%
+    group_by(Species) %>%
+    summarise(.,species_rel_ab = sum(rel_ab),Counts=sum(Mean))
+  mock_relab$Method <- "ITS"
+  return(mock_relab)
+}
+mockshot <- function(){
+  shot_depth <- read.table(paste("/mnt/synology/ALEIX/gut_mock/gutfungigenomes_MG.depth.30.txt.gz",sep=""), header = FALSE, sep = "\t")
+  genes <-unique(shot_depth[,1])
+
+  shot_mg_depth <- shot_depth %>%
+    group_by(V1) %>%
+    filter(.,  V2 > 50  & V2 < max(V2)-50) %>%
+    filter(., V3 > 15)
+
+  shot_mg_mean <- shot_mg_depth %>%
+    summarise(Length = max(V2),Species = strsplit(V1,"|",fixed=TRUE)[[1]][1],Depth=V3) %>%
+    group_by(Species) %>%
+    summarise(Mean = mean(Depth, na.rm = TRUE)) %>%
+  #filter(.,Mean > 4) %>%
+    summarise(Species = Species, rel_ab = Mean/sum(Mean),Mean=Mean)
+  id_to_tax <- read_excel("/mnt/synology/ALEIX/MASTER/ITS/busco_all_taxonomy4331.xlsx")
+  shot_mg_mean <- merge(shot_mg_mean,id_to_tax, by.x = 1,by.y=1)
+  shot_mg_relab <- shot_mg_mean %>%
+    group_by(Species.y) %>%
+    summarise(.,species_rel_ab=sum(rel_ab),Counts=sum(Mean))
+  shot_mg_relab$Method <- "Shotgun"
+  return(shot_mg_relab)
+}
+```
+
+
+GUT POPULATION
+```{r}
+mgmean2 <- gutfungiits()
+relab_its_gut <- gutfungiits2(mgmean2)
+relab_shot_gut <- mockshot()
+```
+
+
+COMPARISON POP 2
+```{r}
+colnames(relab_shot_gut) <- c("Species","species_rel_ab","Counts","Method")
+comparison_gut <- rbind(relab_its_gut,relab_shot_gut)
+comparison_gut <- comparison_gut %>%
+  mutate(Species=str_remove(Species,"s__")) %>%
+  mutate(Species=str_replace(Species,"__"," ")) %>%
+  mutate(Species=str_replace(Species,"_"," ")) %>%
+  arrange(desc(species_rel_ab)) %>%
+  mutate(Species2 = case_when(
+            Species =="Saccharomyces cerevisiae" ~ "Saccharomyces cerevisiae",
+            Species =="Dacryopinax primogenitus" ~ "Dacryopinax primogenitus",
+            Species =="Aspergillus recurvatus" ~ "Aspergillus recurvatus",
+            Species =="Schizophyllum commune" ~ "Schizophyllum commune",
+            Species =="Trichosporon asahii" ~ "Trichosporon asahii",
+            Species =="Aspergillus sydowii" ~ "Aspergillus sydowii",
+            Species =="Candida parapsilosis" ~ "Candida parapsilosis",
+            Species =="Geotrichum candidum" ~ "Geotrichum candidum",
+            Species =="Blastomyces emzantsi" ~ "Blastomyces emzantsi",
+            Species =="Debaryomyces hansenii" ~ "Debaryomyces hansenii",
+            Species =="Yarrowia lipolytica" ~ "Yarrowia lipolytica",
+            Species =="Rhizopogon truncatus" ~ "Rhizopogon truncatus",
+            Species =="Malassezia furfur" ~ "Malassezia furfur",
+            Species =="Malassezia restricta" ~ "Malassezia restricta",
+            TRUE ~ "Other"))
+#write.table(comparison_gut,"/mnt/synology/ALEIX/comparison_gut.tbl",sep="\t",row.names = FALSE)
+
+#comparison$Species <- factor(comparison$Species,levels = comparison$Species)
+mynames <- unique(comparison_gut$Species2)
+mycolours <- scales::hue_pal()(length(mynames))
+mycolours <- setNames(mycolours, mynames)
+# set up custom colour!
+mycolours[c("Saccharomyces cerevisiae","Dacryopinax primogenitus","Aspergillus recurvatus","Schizophyllum commune","Trichosporon asahii","Aspergillus sydowii","Candida parapsilosis","Geotrichum candidum","Blastomyces emzantsi","Debaryomyces hansenii","Yarrowia lipolytica","Rhizopogon truncatus","Malassezia furfur","Malassezia restricta","Other")] <- c("yellow3","darkslategray","darkseagreen","honeydew3","lemonchiffon2","mistyrose2","olivedrab3","tan","snow2","navajowhite","lightgoldenrod","lightblue","ivory2","deepskyblue3","gray")
+
+comparison2_gut <- comparison_gut %>%
+  group_by(Species2,Method) %>%
+  summarise(total_rel_ab = sum(species_rel_ab),Counts=sum(Counts))
+
+ggplot(comparison2_gut,aes(x=Method,y=total_rel_ab, fill=Species2, group=total_rel_ab,label=total_rel_ab)) +
+  geom_bar(stat = "identity",color="black") +
+  theme_pubr() +
+  labs(x = "Mock Community Identification Method",y = "Species Relative Abundance") +
+  scale_fill_manual(values = mycolours) +
+  geom_label(position = position_stack(vjust = 0.5))
+
+expected_gut <- data.frame(Species=c("Saccharomyces cerevisiae","Dacryopinax primogenitus","Aspergillus recurvatus","Schizophyllum commune","Trichosporon asahii","Aspergillus sydowii","Candida parapsilosis","Geotrichum candidum","Blastomyces emzantsi","Debaryomyces hansenii","Yarrowia lipolytica","Rhizopogon truncatus","Malassezia furfur","Malassezia restricta","Saccharomyces cerevisiae","Dacryopinax primogenitus","Aspergillus recurvatus","Schizophyllum commune","Trichosporon asahii","Aspergillus sydowii","Candida parapsilosis","Geotrichum candidum","Blastomyces emzantsi","Debaryomyces hansenii","Yarrowia lipolytica","Rhizopogon truncatus","Malassezia furfur","Malassezia restricta"), Method=c("Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","Shotgun","ITS","ITS","ITS","ITS","ITS","ITS","ITS","ITS","ITS","ITS","ITS","ITS","ITS","ITS"),total_rel_ab=c(0.528,0.116,0.058,0.046,0.046,0.043,0.025,0.025,0.019,0.019,0.019,0.019,0.019,0.018,0.4733,0.2055,0.0442,0.0704,0.0704,0.0304,0.0138,0.0138,0.0083,0.0083,0.0083,0.0176,0.0176,0.0176))
+
+ggplot(expected_gut,aes(x=Method,y=total_rel_ab, fill=Species, group=total_rel_ab,label=total_rel_ab)) +
+  geom_bar(stat = "identity",color="black", width = 0.3) +
+  theme_pubr() +
+  labs(x = "Mock Community Identification Method",y = "Species Relative Abundance") +
+  scale_fill_manual(values = mycolours) +
+  geom_label(position = position_stack(vjust = 0.5)) +
+  theme(aspect.ratio = 1.5/1)
+```
+
+```{r}
+colnames(comparison2_gut) <- c("Species","Method","total_rel_ab","Counts")
+comparison2_pca_gut <- comparison2_gut[,-4] %>% 
+   mutate(rn = row_number()) %>%
+   spread(Method, total_rel_ab) %>%
+   dplyr::select(-rn) %>%
+   group_by(Species) %>%
+   rbind(.,data_frame(Species="Candida parapsilosis",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Dacryopinax primogenitus",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Malassezia furfur",ITS=NA,Shotgun=0)) %>%
+   rbind(.,data_frame(Species="Malassezia restricta",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Rhizopogon truncatus",ITS=NA,Shotgun=0)) %>%
+   summarise_all(na.omit) %>%
+   column_to_rownames(.,var="Species")
+colnames(comparison2_pca_gut) <- c("ITS_pop1","Shotgun_pop1")
+expected_pca_gut <- expected_gut %>% 
+   mutate(rn = row_number()) %>%
+   spread(Method, total_rel_ab) %>%
+   dplyr::select(-rn) %>%
+   group_by(Species) %>%
+   summarise_all(na.omit) %>%
+   column_to_rownames(.,var="Species")
+colnames(expected_pca_gut) <- c("ITS_exp","Shotgun_exp")
+full_gut <- merge(expected_pca_gut,comparison2_pca_gut,by=0,all=T) %>%
+  column_to_rownames(.,var="Row.names")
+full_gut[is.na(full_gut)] <- 0
+```
+
+```{r}
+comparison2_count_gut <- comparison2_gut[,-3] %>% 
+   mutate(rn = row_number()) %>%
+   spread(Method, Counts) %>%
+   dplyr::select(-rn) %>%
+   group_by(Species) %>%
+   rbind(.,data_frame(Species="Candida parapsilosis",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Dacryopinax primogenitus",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Malassezia furfur",ITS=NA,Shotgun=0)) %>%
+   rbind(.,data_frame(Species="Malassezia restricta",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Rhizopogon truncatus",ITS=NA,Shotgun=0)) %>%
+   summarise_all(na.omit) %>%
+   column_to_rownames(.,var="Species")
+colnames(comparison2_count_gut) <- c("ITS_gut","Shotgun_gut")
+comparison2_count_gut <- round(comparison2_count_gut)
+#POPULATION 2
+comparison2_count_gut2 <- subset(comparison2_count_gut, !rownames(comparison2_count_gut)=="Other")
+mock_meta <- data.frame(Type=c("Observed","Observed"),Method=c("ITS","Shotgun"),row.names = colnames(comparison2_count_gut2))
+otable_gut <- otu_table(comparison2_count_gut2,taxa_are_rows = T)
+mdata <- sample_data(mock_meta)
+phy_species_gut <- phyloseq(otable_gut, mdata)
+diversity <- plot_richness(phy_species_gut,  measures = "Shannon")$data
+
+
+
+random_tree_gut = rtree(ntaxa(phy_species_gut), rooted=TRUE, tip.label=taxa_names(phy_species_gut))
+phy_species_gut <- phyloseq(otable_gut, mdata, random_tree_gut)
+wunifrac_dist_gut = phyloseq::distance(phy_species_gut, method="unifrac", weighted=T)
+ordination_gut = ordinate(phy_species_gut, method="PCoA", distance=wunifrac_dist_gut)
+adonis_res_gut <- adonis2(wunifrac_dist_gut~sample_data(phy_species_gut)$Type)
+p <- plot_ordination(phy_species_gut, ordination, color="Method") +
+ theme(aspect.ratio=1)+ theme_pubr()
+```
+
+```{r}
+set.seed(10)
+comparison2_relab_gut <- comparison2_gut[,-4] %>% 
+   mutate(rn = row_number()) %>%
+   spread(Method, total_rel_ab) %>%
+   dplyr::select(-rn) %>%
+   group_by(Species) %>%
+   rename("ITS observed" = "ITS", "Shotgun observed" = "Shotgun") %>%
+   rbind(.,data_frame(Species="Candida parapsilosis",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Dacryopinax primogenitus",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Malassezia furfur",ITS=NA,Shotgun=0)) %>%
+   rbind(.,data_frame(Species="Malassezia restricta",ITS=0,Shotgun=NA)) %>%
+   rbind(.,data_frame(Species="Rhizopogon truncatus",ITS=NA,Shotgun=0)) %>%
+   summarise_all(na.omit) %>%
+   column_to_rownames(.,var="Species")
+colnames(comparison2_relab_gut) <- c("ITS_pop1","Shotgun_pop1")
+expected_pca_gut <- expected_gut %>% 
+   mutate(rn = row_number()) %>%
+   spread(Method, total_rel_ab) %>%
+   dplyr::select(-rn) %>%
+   group_by(Species) %>%
+   summarise_all(na.omit) %>%
+   column_to_rownames(.,var="Species")
+colnames(expected_pca_gut) <- c("ITS_exp","Shotgun_exp")
+full_gut <- merge(expected_pca_gut,comparison2_relab_gut,by=0,all=T) %>%
+  column_to_rownames(.,var="Row.names")
+full_gut[is.na(full_gut)] <- 0
+
+#POPULATION 2
+mock_meta <- data.frame(Type=c("Expected","Expected","Observed","Observed"),Method=c("ITS","Shotgun","ITS","Shotgun"),row.names = colnames(full_gut))
+otable_gut <- otu_table(full_gut,taxa_are_rows = T)
+
+mdata <- sample_data(mock_meta)
+phy_species_gut <- phyloseq(otable_gut, mdata)
+
+random_tree_gut = rtree(ntaxa(phy_species_gut), rooted=TRUE, tip.label=taxa_names(phy_species_gut))
+phy_species_gut <- phyloseq(otable_gut, mdata, random_tree_gut)
+wunifrac_dist_gut = phyloseq::distance(phy_species_gut, method="unifrac", weighted=T)
+ordination_gut = ordinate(phy_species_gut, method="PCoA", distance=wunifrac_dist_gut)
+adonis_res_gut <- adonis2(wunifrac_dist_gut~sample_data(phy_species_gut)$Type)
+p <- plot_ordination(phy_species_gut, ordination, color="Method") +
+ theme(aspect.ratio=1)+ theme_pubr()
+```
+
+
+
+
+```{r}
+comparison2_gut <- comparison2_gut %>% mutate(Method = case_when(
+    Method == "ITS" ~ "ITS observed",
+    Method == "Shotgun" ~ "Shotgun observed"
+  ))
+colnames(comparison2_gut) <- c("Species","Method","total_rel_ab")
+expected_gut <- expected_gut %>%mutate(Method = case_when(
+    Method == "ITS" ~ "ITS expected",
+    Method == "Shotgun" ~ "Expected"
+  ))
+expobs_gut <- rbind(comparison2_gut,expected_gut[expected_gut$Method=="Expected",])
+
+ggplot(expobs_gut,aes(x=Method,y=total_rel_ab, fill=Species, group=total_rel_ab)) +
+  geom_bar(stat = "identity",color="black") +
+  theme_pubr() +
+  #scale_alpha_manual(values=myalphas)+
+  labs(x = "Mock Community Identification Method",y = "Species Relative Abundance") +
+  scale_fill_manual(values = mycolours) +
+  theme(aspect.ratio = 0.5/2) +
+  coord_flip()
+  #geom_label(position = position_stack(vjust = 0.5))
+expobs_gut$Pop <- "Population Gut"
+expobs_gut <- expobs_gut[,-4]
+```

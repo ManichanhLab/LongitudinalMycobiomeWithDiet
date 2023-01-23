@@ -1,0 +1,623 @@
+---
+title: "LongitudinalMycobiome"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+clean enrivronment
+```{r}
+rm(list = ls())
+```
+
+Import required packages
+```{r packages}
+library(ggpubr)
+library(patchwork)
+library(tidyverse)
+library(phyloseq)
+library(ggplot2)
+library(reshape2)
+library(nlme)
+library(compositions)
+library(vegan)
+library(phyloseq)
+library("ape")
+library(microbiome)
+library(dplyr)
+library(psych)
+```
+
+Define functions
+```{r}
+import_buglist_phyloseq <- function(path_buglist, path_metadata, delimiter) {
+ library(phyloseq)
+ buglist <- read.csv(path_buglist,header = T, sep = delimiter, row.names = 1, check.names = F)
+ buglist[is.na(buglist)] <- 0
+ metadata <- read.csv(path_metadata, header = T, sep = delimiter,row.names = 1,check.names = F)
+ metadata[is.na(metadata)] <- "NA"
+ rm(buglist_species)
+ buglist_species <- extract_species(buglist)
+ buglist_species <- buglist_species %>%  sweep(2,colSums(.),"/")
+ buglist_species <- buglist_species*100
+ rm(taxa_table)
+ taxa_Table <- extract_taxaTable(buglist_species)
+ phy_species <- import_phyloseq(buglist_species,taxa_Table,metadata)
+ return(phy_species)
+}
+import_pwylist_phyloseq <- function(path_pwylist, path_metadata, delimiter){
+ library('phyloseq')
+ pwylist <- read.csv(path_pwylist,header = T, sep = delimiter, row.names = 1, check.names = F)
+ pwylist[is.na(pwylist)] <- 0
+ metadata <- read.csv(path_metadata, header = T, sep = delimiter,row.names = 1,check.names = F)
+ metadata[is.na(metadata)] <- "NA"
+ sampdata <- sample_data(metadata)
+ ptable <- otu_table(pwylist, taxa_are_rows = T)
+ phy_protein <- phyloseq(ptable, sampdata)
+ random_tree = rtree(ntaxa(phy_protein), rooted=TRUE, tip.label=taxa_names(phy_protein))
+ phy_protein = merge_phyloseq(phy_protein, sampdata, random_tree)
+ return(phy_protein)
+}
+extract_species <- function(buglist){
+ to_look = "s__"
+ for (i in row.names(buglist)) {
+  if (grepl(to_look,i)) {
+   if (!exists("just_species")){
+    just_species <- data.frame(buglist[i,],check.names = F)
+   } 
+   else if (exists("just_species")){
+    just_species <- rbind(just_species, buglist[i,])
+   }
+  }
+ }
+ just_species[is.na(just_species)] <- 0
+ return(just_species)
+}
+extract_taxaTable <- function(only_species){
+ library(stringr)
+ library(phyloseq)
+ for (i in row.names(only_species)) {
+  tax_list <- str_split(i,"\\|", simplify = T)
+  kingdom <- str_split(tax_list[1], pattern = "k__", simplify = T)[2]
+  phylum<- str_split(tax_list[2], pattern = "p__", simplify = T)[2]
+  class<- str_split(tax_list[3], pattern = "c__", simplify = T)[2]
+  order<- str_split(tax_list[4], pattern = "o__", simplify = T)[2]
+  family<- str_split(tax_list[5], pattern = "f__", simplify = T)[2]
+  genus <- str_split(tax_list[6], pattern = "g__", simplify = T)[2]
+  specie <- str_split(tax_list[7], pattern = "s__", simplify = T)[2]
+  
+  if (!exists("taxa_table")){
+   taxa_table <- data.frame(kingdom, phylum, class, order, family, genus, specie, stringsAsFactors = F)
+  } 
+  else if (exists("taxa_table")){
+   taxa_table <- rbind(taxa_table, c(kingdom, phylum, class, order, family, genus, specie))
+  }
+ }
+ row.names(taxa_table) <- row.names(only_species)
+ return(taxa_table)
+}
+import_phyloseq <- function(only_species,tax,meta){
+ library(phyloseq)
+ tax = tax_table(tax)
+ colnames(tax) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+ taxa_names(tax) <- row.names(only_species)
+ otable <- otu_table(only_species,taxa_are_rows = T)
+ mdata <- sample_data(meta)
+ phyObject <- phyloseq(otable, mdata, tax)
+ random_tree = rtree(ntaxa(phyObject), rooted=TRUE, tip.label=taxa_names(phyObject))
+ phyObject = merge_phyloseq(phyObject,random_tree)
+ return(phyObject)
+}
+
+residual_Eadjusted <- function(table){
+  Residual_adjusted_table <- matrix(nrow=nrow(table), ncol=ncol(table))
+  for (i in 1:nrow(table)){
+    linear<-lm(as.numeric(table[i,])~as.numeric(table[1,]))
+    Residual_adjusted_table[i,]<-linear$residuals+ mean(as.numeric(table[i,]))
+  }
+  colnames(Residual_adjusted_table)<- colnames(table)
+  rownames(Residual_adjusted_table)<-rownames(table)
+  Residual_adjusted_table <- Residual_adjusted_table[-1,]
+  return(Residual_adjusted_table)
+}
+
+density_Eadjusted <- function(table){
+  Density_adjusted_table <- matrix(nrow=nrow(table), ncol=ncol(table))
+  Density_adjusted_table <- table/table[1,]*100
+  Density_adjusted_table <- Density_adjusted_table[-1,]
+  return(Density_adjusted_table)
+}
+
+wilcoxon_calculate <- function(table1, table2){
+  pval_wilcoxon <- matrix(ncol=1, nrow=nrow(table1))
+  for (i in 1:nrow(table1)) {
+    t <- wilcox.test(table1[i,],table2[i,])
+    pval_wilcoxon[i,1] <- t$p.value
+  }
+  rownames(pval_wilcoxon) <- rownames(table1)
+  colnames(pval_wilcoxon) <- "Wilcoxon pval"
+  return(pval_wilcoxon)
+}
+icc_calculate <- function(table1, table2){
+  icc.table <- matrix(ncol=1, nrow=nrow(table1))
+  for (i in 1:nrow(table1)){
+    corr_table1 <- data.frame(table1[i,], table2[i,])
+    icc1<-ICC(corr_table1)
+    icc.table[i,1]<-icc1$results$ICC[3]
+  }  
+  rownames(icc.table) <- rownames(table1)
+  colnames(icc.table) <- "ICC number"
+  return(icc.table)
+}
+```
+
+Import buglists and metadata
+```{r just_species}
+####### TAXA #######
+myco_phy_all <- import_buglist_phyloseq(path_buglist = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/ANALYSIS/buglists_link/all_buglist.txt",path_metadata = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/metadata.csv",delimiter = '\t')
+myco_phy_common <- import_buglist_phyloseq(path_buglist = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/ANALYSIS/buglists_link/merged_common_buglist.txt",path_metadata = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/metadata.csv",delimiter = '\t')
+myco_phy_fungi <- import_buglist_phyloseq(path_buglist = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/ANALYSIS/buglists_link/fungi_buglist.txt",path_metadata = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/metadata.csv",delimiter = "\t")
+metadata_lm <- read.csv("/mnt/synology/ZIXUAN/LongitudinalMycobiome/metadata.csv",header = T,row.names = 1,sep = "\t")
+# ffq <- read.csv("/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/FFQnutrients_LongitudinalMycobiome.tsv",header = T,sep = '\t',row.names = 1,check.names = F)
+# foods <- read.csv("/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/dailyintake_LongitudinalMycobiome_classified.csv",header = T,sep = '\t',row.names = 1)
+# ffq1 <- ffq[ffq$sFFQ=="1",-34]
+# ffq2 <- ffq[ffq$sFFQ=="2",-34]
+# foods1 <- foods[-25,foods[25,]=="1"]
+# foods2 <- foods[-25,foods[25,]=="2"]
+# merged_fd <- (foods1+foods2)/2
+# rm(ffq1,ffq2,foods1,foods2)
+# 
+# write.csv(ffq,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/ffq_merged.csv",row.names = T)
+# write.csv(merged_fd,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/foods_merged.csv",row.names = T)
+
+####### FUNC #######
+pwy_list <- read.csv("/mnt/synology/ZIXUAN/LongitudinalMycobiome/ANALYSIS/pwy_link/merged_common_pwy_unstratified.txt",sep = '\t',header = T,row.names = 1,check.names = T)
+func_phy <- import_pwylist_phyloseq(path_pwylist = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/ANALYSIS/pwy_link/merged_common_pwy_unstratified.txt",path_metadata = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/metadata.csv",delimiter = "\t")
+func_phy_fungi <- import_pwylist_phyloseq(path_pwylist = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/ANALYSIS/pwy_link/fungi_pwy_unstratified.txt",path_metadata = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/metadata.csv",delimiter = "\t")
+```
+
+Energy Adjustment
+```{r}
+ffq1 <- t(ffq1)
+ffq2 <- t(ffq2)
+#### residual method
+Residual_adjusted_ffq1 <- residual_Eadjusted(table = ffq1)
+Residual_adjusted_ffq2 <- residual_Eadjusted(table = ffq2)
+
+adjusted_ffq <- (Residual_adjusted_ffq1+Residual_adjusted_ffq2)/2
+colnames(adjusted_ffq) <- c("L1","L2","L3","L4","L5","L6")
+write.csv(adjusted_ffq,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/Res_adj_ffq_merged.csv",row.names = T)
+
+#### density method
+Density_adjusted_ffq1 <- density_Eadjusted(table = ffq1)
+Density_adjusted_ffq2 <- density_Eadjusted(table = ffq2)
+
+```
+
+Compare two sFFQs
+  two sFFQs are not significantly different with each other
+```{r}
+#### Wilcoxon
+pval_wcx_ffq <- wilcoxon_calculate(table1 = Residual_adjusted_ffq1, table2 = Residual_adjusted_ffq2)
+pval_wcx_fd <- wilcoxon_calculate(table1 = t(t(foods1)), table2 = t(t(foods2)))
+
+
+#### ICC 
+icc_ffq <- icc_calculate(table1 = Residual_adjusted_ffq1, table2 = Residual_adjusted_ffq2)
+icc_fd <- icc_calculate(table1 = t(t(foods1)), table2 = t(t(foods2)))
+write.csv(pval_wcx_ffq,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/pval_wcx_ffq.csv",row.names = T)
+write.csv(pval_wcx_fd,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/pval_wcx_fd.csv",row.names = T)
+write.csv(icc_ffq,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/icc_ffq.csv",row.names = T)
+write.csv(icc_fd,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/sFFQ_diet/icc_fd.csv",row.names = T)
+```
+
+Make subset phyloseq
+```{r}
+subset <- subset_samples(myco_phy_fungi)
+# subset <- subset_samples(myco_phy_fungi,Gender=="Male")
+# subset <- subset_samples(fung_phy, study=="metahit_spain188")
+subset_metadata <- data.frame(sample_data(subset))
+# subset_metadata$BMI <- as.numeric(subset_metadata$BMI)
+# subset_metadata$Host_Age <- as.numeric(subset_metadata$Host_Age)
+subset_otu <- data.frame(otu_table(subset))
+subset_otu <- subset_otu %>%
+  mutate_if(is.numeric,round)
+subset_otu <- subset_otu[colSums(subset_otu) > 0]
+subset_otu <- subset_otu[rowSums(subset_otu) > 0,]
+otable <- otu_table(subset_otu,taxa_are_rows = T)
+mdata <- sample_data(subset_metadata)
+phyloseq_sub <- phyloseq(otable,mdata)
+random_tree = rtree(ntaxa(phyloseq_sub), rooted=TRUE, tip.label=taxa_names(phyloseq_sub))
+phyloseq_sub = merge_phyloseq(phyloseq_sub, mdata, random_tree)
+```
+
+Beta diversity
+  Beta diversity in all three partitions are not significantly different (TAXA)
+  Partition, Gender, Timepoint significantly contribute to functional variation (Functional)
+```{r PCoA}
+library(ggbiplot)
+
+wunifrac_dist = phyloseq::distance(func_phy, method="unifrac", weighted=T)
+ordination = ordinate(func_phy, method="PCoA", distance=wunifrac_dist)
+adonis_res <- adonis2(wunifrac_dist~sample_data(func_phy)$Partition)
+
+adonis_res2 <- adonis2(wunifrac_dist~ sample_data(func_phy)$BirthType+sample_data(func_phy)$Timepoint+sample_data(func_phy)$Gender+sample_data(func_phy)$BMI+sample_data(func_phy)$IndividualID+sample_data(func_phy)$Partition)
+
+#+ sample_data(phyloseq_sub)$Shannon_index + sample_data(phyloseq_sub)$Chao1_index
+
+
+adonis_res2$variable = rownames(adonis_res2)
+adonis_res2$FDR <- p.adjust(adonis_res2$`Pr(>F)`, method = "BH")
+adonis_plot2 <- data.frame(adonis_res2[0:(nrow(adonis_res2)-2),])
+
+
+ggplot(data = adonis_plot2, aes(x = R2, y = reorder(variable, - R2))) +
+  geom_bar(stat = "identity") + 
+  scale_x_continuous("Adonis R²") +
+  theme_classic() + 
+  ggtitle("Contribution of factors to data's functional effect size")
+
+
+png("/home/zixuan/00-BACKUP/META/analysis/PCoA/fung_spain_wuni_0.03863383_0.004.png", units="in", width=10, height=7, res=300)
+
+
+p <- plot_ordination(myco_phy_all, ordination, color="Partition") 
+p + theme(aspect.ratio=1)+ theme_classic()+
+  scale_fill_brewer(palette = "Dark2")+
+  scale_color_brewer(palette = "Dark2") +
+  ggtitle("Pathways clustering (weighted unifrac)") +
+  theme(plot.title = element_text(hjust = 0.5),text = element_text(size=30))+ 
+  stat_ellipse(aes(fill = Partition), geom="polygon",level=0.95,alpha=0.2)
+
+dev.off()
+
+png("/home/zixuan/00-BACKUP/META/analysis/PCoA/fung_spain_bray_0.03088827_0.003.png", units="in", width=10, height=7, res=300)
+
+phylo_ord2 <- ordinate(myco_phy, method = "PCoA", distance = 'bray')
+p2 <- plot_ordination(myco_phy, phylo_ord2, color = "Partition")
+p2 + theme(aspect.ratio=1)+ theme_classic()+
+  scale_fill_brewer(palette = "Dark2")+
+  scale_color_brewer(palette = "Dark2") +
+  ggtitle("Pathways clustering (bray-curtis)") +
+  theme(plot.title = element_text(hjust = 0.5),text = element_text(size=30))+ 
+  stat_ellipse(aes(fill = Partition), geom="polygon",level=0.95,alpha=0.2)
+
+dev.off()
+
+bl <- as.data.frame(t(subset_otu)) #the otu table for which you want to calculate
+
+adonis_res <- adonis2(bl ~ disease, data = subset_metadata)
+
+```
+
+Plot alpha diversity
+  Alpha diversity in fungi partition mycobiome is significantly higher than that in bacteria and control partitions
+```{r dev='png',dpi=600}
+library(easyGgplot2)
+diversity_Shannon <- plot_richness(myco_phy_fungi,measures = "Shannon")$data
+diversity_chao1 <- plot_richness(phyloseq_sub,measures = "Chao1")$data
+diversity_obs <- plot_richness(phyloseq_sub,measures = "Observed")$data
+
+png("/home/zixuan/00-BACKUP/META/analysis/DIVERSITY/bacteria/t2d_obs.png", units="in", width=8, height=5, res=300)
+# tiff("E:/vhir/DB/analysis/DIVERSITY/T1D/china_T1D_shannon.tiff", units="in", width=10, height=7, res=300)
+my_comparison=list(c("Fungi","Bacteria"),c("Fungi","Control"),c("Bacteria","Control"))
+
+ggplot(diversity_Shannon,aes(x=reorder(Partition,value,na.rm=T),y=value)) + 
+  geom_boxplot(width=0.5,lwd=1.5) +
+  geom_jitter(width=0.3,aes(color=Partition)) +
+  scale_color_brewer(palette="Dark2")+theme_classic()+
+  theme(text = element_text(size=25),
+        axis.text.x = element_text(angle=0, hjust=1)) +
+  stat_compare_means(comparisons =  my_comparison)
+dev.off()
+```
+
+Intra- and inter-individual dissimilarities
+ bray-curtis dissimilarities intra group is not significantly lower than that of inter group (TAXA)
+ bray-curtis dissimilarities intra group is significantly lower than that of inter group (FUNC)
+```{r}
+intra=c("L1","L2","L3","L4","L5","L6")
+intra_dist <- vector(mode = "list")
+for (i in intra) {
+  subset <- subset_samples(func_phy, IndividualID==i)
+  subset_otu <- data.frame(otu_table(subset))
+  subset_metadata <- data.frame(sample_data(subset))
+  subset_otu <- subset_otu[colSums(subset_otu) > 0]
+  subset_otu <- subset_otu[rowSums(subset_otu) > 0,]
+  otable <- otu_table(subset_otu,taxa_are_rows = T)
+  mdata <- sample_data(subset_metadata)
+  phyloseq_sub <- phyloseq(otable,mdata)
+  random_tree = rtree(ntaxa(phyloseq_sub), rooted=TRUE, tip.label=taxa_names(phyloseq_sub))
+  phyloseq_sub = merge_phyloseq(phyloseq_sub, mdata, random_tree)
+  bray_dist=as.list(phyloseq::distance(phyloseq_sub, method="bray"))
+  intra_dist=append(intra_dist,bray_dist)
+}
+intra_dist_num=as.numeric(na.omit(unlist(intra_dist)))
+shapiro.test(intra_dist_num)
+
+inter=c("T1","T2","T3","T4","T5","T6","T7","T8")
+inter_dist <- vector(mode = "list")
+for (t in inter) {
+  subset <- subset_samples(func_phy, Timepoint==t)
+  subset_otu <- data.frame(otu_table(subset))
+  subset_metadata <- data.frame(sample_data(subset))
+  subset_otu <- subset_otu[colSums(subset_otu) > 0]
+  subset_otu <- subset_otu[rowSums(subset_otu) > 0,]
+  otable <- otu_table(subset_otu,taxa_are_rows = T)
+  mdata <- sample_data(subset_metadata)
+  phyloseq_sub <- phyloseq(otable,mdata)
+  random_tree = rtree(ntaxa(phyloseq_sub), rooted=TRUE, tip.label=taxa_names(phyloseq_sub))
+  phyloseq_sub = merge_phyloseq(phyloseq_sub, mdata, random_tree)
+  bray_dist=as.list(phyloseq::distance(phyloseq_sub, method="bray"))
+  inter_dist=append(inter_dist,bray_dist)
+}
+inter_dist_num=as.numeric(na.omit(unlist(inter_dist)))
+shapiro.test(inter_dist_num)
+wilcox.test(intra_dist_num,inter_dist_num,alternative = "less")
+
+intra_dist_num=data.frame(intra_dist_num)
+intra_dist_num[,"group"]="intra"
+inter_dist_num=data.frame(inter_dist_num)
+inter_dist_num[,"group"]="inter"
+colnames(intra_dist_num) <- c("dist","group")
+colnames(inter_dist_num) <- c("dist","group")
+
+plot.data <- rbind(intra_dist_num, inter_dist_num)
+
+my_comparison=list(c("intra","inter"))
+
+ggplot(plot.data,aes(x=reorder(group,dist,na.rm=T),y=dist)) + 
+  geom_boxplot(width=0.5,lwd=1.5) +
+  geom_jitter(width=0.3,aes(color=group)) +
+  scale_color_brewer(palette="Dark2")+theme_classic()+
+  theme(text = element_text(size=25),
+        axis.text.x = element_text(angle=0, hjust=1)) +
+  stat_compare_means(p.adjust.method = "bonferroni", comparisons =  my_comparison,
+                     label = "p.signif", 
+                     symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), symbols = c("****", "***", "**", "*", "ns")),
+                     method.args = list(alternative = "less"))
+```
+
+Correlation between alpha diversity with nutrients
+ The correlation between Birth type/Processed meet and alpha diversity is opposite to Fran's results
+```{r}
+write.csv(diversity_Shannon,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/STATISTICS/TAXA/cor_AlphaD_METADATA/Shannong.csv")
+diversity <- diversity_Shannon
+####### Spearman and Pearson correlation #######
+cor.personal.table <- matrix(ncol=4, nrow=2)
+cor.nutrient.table <- matrix(ncol=4, nrow=32)
+cor.foods.table <- matrix(ncol=4, nrow=24)
+colnames(cor.nutrient.table) <- colnames(cor.personal.table) <- colnames(cor.foods.table) <- c("pval_P","cor_P","pval_S","cor_S")
+j=1
+for (i in c(5,11)) {
+  res_P <- cor.test(diversity$value,diversity[,i],method = "pearson")
+  res_S <- cor.test(diversity$value,diversity[,i],method = "spearman")
+  cor_pval_P <- res_P$p.value
+  cor_value_P <- res_P$estimate
+  cor_pval_S <- res_S$p.value
+  cor_value_S <- res_S$estimate
+  cor.personal.table[j,1] <- cor_pval_P
+  cor.personal.table[j,2] <- cor_value_P
+  cor.personal.table[j,3] <- cor_pval_S
+  cor.personal.table[j,4] <- cor_value_S
+  j=j+1
+}
+j=1
+for (i in 13:44) {
+  res_P <- cor.test(diversity$value,diversity[,i],method = "pearson")
+  res_S <- cor.test(diversity$value,diversity[,i],method = "spearman")
+  cor_pval_P <- res_P$p.value
+  cor_value_P <- res_P$estimate
+  cor_pval_S <- res_S$p.value
+  cor_value_S <- res_S$estimate
+  cor.nutrient.table[j,1] <- cor_pval_P
+  cor.nutrient.table[j,2] <- cor_value_P
+  cor.nutrient.table[j,3] <- cor_pval_S
+  cor.nutrient.table[j,4] <- cor_value_S
+  j=j+1
+}
+j=1
+for (i in 45:68) {
+  res_P <- cor.test(diversity$value,diversity[,i],method = "pearson")
+  res_S <- cor.test(diversity$value,diversity[,i],method = "spearman")
+  cor_pval_P <- res_P$p.value
+  cor_value_P <- res_P$estimate
+  cor_pval_S <- res_S$p.value
+  cor_value_S <- res_S$estimate
+  cor.foods.table[j,1] <- cor_pval_P
+  cor.foods.table[j,2] <- cor_value_P
+  cor.foods.table[j,3] <- cor_pval_S
+  cor.foods.table[j,4] <- cor_value_S
+  j=j+1
+}
+rownames(cor.personal.table) <- c("Age","BMI")
+rownames(cor.nutrient.table) <- colnames(diversity)[13:44]
+rownames(cor.foods.table) <- colnames(diversity)[45:68]
+
+write.csv(cor.personal.table,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/STATISTICS/TAXA/cor_AlphaD_METADATA/cor_personal.csv")
+write.csv(cor.nutrient.table,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/STATISTICS/TAXA/cor_AlphaD_METADATA/cor_nutrient.csv")
+write.csv(cor.foods.table,"/mnt/synology/ZIXUAN/LongitudinalMycobiome/STATISTICS/TAXA/cor_AlphaD_METADATA/cor_foods.csv")
+
+cor.sig.spearman <- read.csv("/mnt/synology/ZIXUAN/LongitudinalMycobiome/STATISTICS/TAXA/cor_AlphaD_METADATA/cor_Spearman_significant.csv",header = T,row.names = 1,sep = "\t")
+
+ggplot(cor.sig.spearman,aes(x=reorder(Metadata,cor_S),y=cor_S,fill=Type)) +
+  geom_bar(aes(fill = Type), stat = "identity",
+           show.legend = FALSE,
+           color = "white") + # Border color
+  xlab("Metadata") +
+  ylab("Spearman correlation") +
+  scale_y_continuous(breaks= seq(-1, 1, by = 0.1),
+                     limits = c(min(cor.sig.spearman$cor_S),
+                                max(cor.sig.spearman$cor_S))) +
+  coord_flip() +
+  theme_pubr()+ theme(text = element_text(size=20),legend.position = "none")+
+  scale_fill_brewer(palette = "Dark2")
+
+####### Maaslin2 #######
+library(Maaslin2)
+diversity_otu <- read.csv("E:/vhir/Enrichment/diversity_otu.csv",header = T,row.names = 1)
+maaslin_otu <- data.frame(otu_table(subset_samples(phy_all_clean, disease != "UC")))
+maaslin_metadata <- data.frame(sample_data(subset_samples(phy_all_clean, disease != "UC")))
+maaslin_metadata$cd_localization[is.na(maaslin_metadata$cd_localization)] <- "None"
+
+Maaslin2(
+  diversity_otu,
+  metadata_lm,
+  output = "E:/vhir/Enrichment/STATISTICS/cor_AlphaD_METADATA/MAASLIN2/Personal",
+  min_abundance = 0.0,
+  min_prevalence = 0.0,
+  min_variance = 0.0,
+  normalization = "NONE",
+  transform = "NONE",
+  analysis_method = "LM",
+  max_significance = 0.1,
+  fixed_effects = c("BirthType","BMI","Age","Gender","BloodType"),
+  correction = "BH",
+  standardize = TRUE,
+  cores = 1,
+  plot_heatmap = TRUE,
+  plot_scatter = TRUE,
+  heatmap_first_n = 50,
+  reference = NULL
+)
+# fixed_effects = c("N1","N2","N3","N4","N5","N6","N7","N8","N9","N10","N11","N12","N13","N14","N15","N16","N17","N18","N19","N20","N21","N22","N23","N24","N25","N26","N27","N28","N29","N30","N31","N32")
+# fixed_effects = c("FGs13","FGs40","FGs47","FGs29","FGs35","FGs48","FGs12","FGs45","FGs18","FGs42","FGs17","FGs52","FGs37","FGs41","FGs24","FGs53")
+# fixed_effects = c("BirthType","BMI","Age","Gender","BloodType")
+```
+
+Maaslin2_TAXA
+```{r}
+library(Maaslin2)
+maaslin_otu <- data.frame(otu_table(subset_samples(myco_phy_all)))
+maaslin_metadata <- data.frame(sample_data(subset_samples(myco_phy_all)))
+
+for (i in 32:58) {
+ fgs <- paste0("FGs",i)
+ Maaslin2(
+  maaslin_otu,
+  maaslin_metadata,
+  output = paste0("E:/vhir/Enrichment/STATISTICS/MAASLIN2/FoodGroups/",fgs),
+  min_abundance = 0.0,
+  min_prevalence = 0.0,
+  min_variance = 0.0,
+  normalization = "NONE",
+  transform = "NONE",
+  analysis_method = "LM",
+  max_significance = 0.1,
+  fixed_effects = c(fgs),
+  correction = "BH",
+  standardize = TRUE,
+  cores = 1,
+  plot_heatmap = TRUE,
+  plot_scatter = TRUE,
+  heatmap_first_n = 50,
+  reference = NULL
+)
+}
+Maaslin2(
+  maaslin_otu,
+  maaslin_metadata,
+  output = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/STATISTICS/TAXA/MAASLIN2/Partition",
+  min_abundance = 0.0,
+  min_prevalence = 0.0,
+  min_variance = 0.0,
+  normalization = "NONE",
+  transform = "NONE",
+  analysis_method = "LM",
+  max_significance = 0.5,
+  fixed_effects = c("Partition"),
+  correction = "BH",
+  standardize = TRUE,
+  cores = 1,
+  plot_heatmap = TRUE,
+  plot_scatter = TRUE,
+  heatmap_first_n = 50,
+  reference = c("Partition","Control")
+)
+
+```
+
+Maaslin2_FUNC
+```{r}
+library(Maaslin2)
+maaslin_otu <- data.frame(otu_table(subset_samples(func_phy)))
+maaslin_metadata <- data.frame(sample_data(subset_samples(func_phy)))
+
+for (i in 32:58) {
+ fgs <- paste0("FGs",i)
+ Maaslin2(
+  maaslin_otu,
+  maaslin_metadata,
+  output = paste0("E:/vhir/Enrichment/STATISTICS/MAASLIN2/FoodGroups/",fgs),
+  min_abundance = 0.0,
+  min_prevalence = 0.0,
+  min_variance = 0.0,
+  normalization = "NONE",
+  transform = "NONE",
+  analysis_method = "LM",
+  max_significance = 0.1,
+  fixed_effects = c(fgs),
+  correction = "BH",
+  standardize = TRUE,
+  cores = 1,
+  plot_heatmap = TRUE,
+  plot_scatter = TRUE,
+  heatmap_first_n = 50,
+  reference = NULL
+)
+}
+Maaslin2(
+  maaslin_otu,
+  maaslin_metadata,
+  output = "/mnt/synology/ZIXUAN/LongitudinalMycobiome/STATISTICS/FUNC/MAASLIN/Partition",
+  min_abundance = 0.0,
+  min_prevalence = 0.0,
+  min_variance = 0.0,
+  normalization = "NONE",
+  transform = "NONE",
+  analysis_method = "LM",
+  max_significance = 0.1,
+  fixed_effects = c("Partition"),
+  correction = "BH",
+  standardize = TRUE,
+  cores = 1,
+  plot_heatmap = TRUE,
+  plot_scatter = TRUE,
+  heatmap_first_n = 50,
+  reference = c("Partition","Control")
+)
+
+```
+
+Calculate DA 
+```{r}
+sig.list <- read.csv("/home/zixuan/00-BACKUP/META/analysis/Maaslin/cd_uc_merge_sig_list.txt", sep = '\t',header = F)
+da_table <- data.frame()
+abundance_table <- data.frame()
+for (i in sig.list$V1){
+ df <- data.frame(Abundance = abundances(phyloseq_sub)[i,],
+                  Group = meta(phyloseq_sub)$disease)
+ # uc <- mean(df[df$Group=="UC",]$Abundance)
+ uc <- mean(df[df$Group=="UC",]$Abundance)
+ cd <- mean(df[df$Group=="CD",]$Abundance)
+ da_table <- rbind(da_table,paste(i,cd-uc,sep = "|"))
+ df <- aggregate(df[,1], list(df$Group), mean)
+ df['pwy']=i
+ abundance_table <- rbind(abundance_table,df)
+}
+colnames(da_table) <- "taxa|cd-uc"
+colnames(abundance_table) <- c("Group","Abundance","taxa")
+# write.csv(abundance_table,"E:/vhir/DB/meta/functional/analysis/Maaslin/china/ESRD/abundance_table.csv",row.names = T)
+write.csv(da_table,"/home/zixuan/00-BACKUP/META/analysis/Maaslin/cd_uc_da_path.csv",row.names = FALSE)
+write.csv(abundance_table,"/home/zixuan/00-BACKUP/META/analysis/Maaslin/cd_uc_abundance.csv",row.names = FALSE)
+```
+
+Plot DA
+```{r}
+
+
+```
+
+
